@@ -77,7 +77,7 @@ impl CPU {
     }
 
     pub fn ld_hlptr_a(&mut self) {
-        let hl = ((self.registers.l as u16) | ((self.registers.h as u16 ) << 8)) as u16;
+        let hl = ((self.registers.l as u16) | ((self.registers.h as u16) << 8)) as u16;
         self.write_byte(hl, self.registers.a);
     }
 
@@ -401,4 +401,298 @@ impl CPU {
         }
         self.registers.f = new_f;
     }
+
+    pub fn bit_7_l(&mut self) {
+        let bit = (self.registers.l & 0b1000_0000) >> 7;
+        self.registers.f &= 0b0001_0000;
+        self.registers.f |= 0b0010_0000;
+        if bit == 0 {
+            self.registers.f |= 0b1000_0000;
+        }
+    }
+
+    pub fn ld_a_l(&mut self) {
+        self.registers.a = self.registers.l;
+    }
+
+    pub fn ld_a_b(&mut self) {
+        self.registers.a = self.registers.b;
+    }
+
+    pub fn add_a_hlptr(&mut self) {
+        let original = self.registers.a;
+        let hl = (self.registers.l as u16) | ((self.registers.h as u16) << 8);
+        let val = self.read_byte(hl);
+        let mut new_f = 0b0000_0000;
+        if ((original as u16) + (val as u16)) > 0xFF {
+            new_f |= 0b0001_0000;
+        }
+        if (original & 0x0F) + (val & 0x0F) > 0x0F {
+            new_f |= 0b0010_0000;
+        }
+        let result = original.wrapping_add(val);
+        if result == 0 {
+            new_f |= 0b1000_0000;
+        }
+        self.registers.f = new_f;
+        self.registers.a = result;
+    }
+
+    pub fn di(&mut self) {}
+
+    pub fn jp_a16(&mut self) {
+        let low = self.fetch_byte();
+        let high = self.fetch_byte();
+        let address = (low as u16) | ((high as u16) << 8);
+        self.pc = address;
+    }
+
+    pub fn ld_hlptr_n8(&mut self) {
+        let hl = (self.registers.l as u16) | ((self.registers.h as u16) << 8);
+        let n8 = self.fetch_byte();
+        self.write_byte(hl, n8);
+    }
+
+    pub fn ld_a_hlptrinc(&mut self) {
+        let mut hl = (self.registers.l as u16) | ((self.registers.h as u16)  << 8);
+        self.registers.a = self.read_byte(hl);
+        hl = hl.wrapping_add(1);
+        self.registers.l = (hl & 0x00FF) as u8;
+        self.registers.h = ((hl & 0xFF00) >> 8) as u8;
+    }
+
+    pub fn ld_bc_n16(&mut self) {
+        let low = self.fetch_byte();
+        let high = self.fetch_byte();
+        self.registers.b = high;
+        self.registers.c = low;
+    }
+
+    pub fn dec_bc(&mut self) {
+        let mut bc = (self.registers.c as u16) | ((self.registers.b as u16) << 8);
+        bc = bc.wrapping_sub(1);
+        self.registers.c = (bc & 0x00FF) as u8;
+        self.registers.b = ((bc & 0xFF00) >> 8) as u8;
+    }
+
+    pub fn or_a_c(&mut self) {
+        let mut new_f = 0b0000_0000;
+        self.registers.a |= self.registers.c;
+        if self.registers.a == 0 {
+            new_f |= 0b1000_0000;
+        }
+        self.registers.f = new_f;
+    }
+
+    pub fn ei(&mut self) {}
+    
+    pub fn cpl(&mut self) {
+        self.registers.a = !self.registers.a;
+        self.registers.f &= 0b1001_0000;
+        self.registers.f |= 0b0110_0000;
+    }
+
+    pub fn and_a_n8(&mut self) {
+        let n8 = self.fetch_byte();
+        self.registers.a &= n8;
+        let mut new_f = 0b0010_0000;
+        if self.registers.a == 0 {
+            new_f |= 0b1000_0000;
+        }
+        self.registers.f = new_f;
+    }
+
+    pub fn swap_a(&mut self) {
+        let value = self.registers.a;
+        let result = (value >> 4) | (value << 4);
+        self.registers.a = result;
+        self.registers.f &= 0b0000_0000;
+        if result == 0 {
+            self.registers.f |= 0b1000_0000;
+        }
+    }
+
+    pub fn ld_b_a(&mut self) {
+        self.registers.b = self.registers.a;
+    }
+
+    pub fn or_a_b(&mut self) {
+        self.registers.a |= self.registers.b;
+        self.registers.f &= 0b0000_0000;
+        if self.registers.a == 0 {
+            self.registers.f |= 0b1000_0000;
+        }
+    }
+
+    pub fn xor_a_c(&mut self) {
+        self.registers.a ^= self.registers.c;
+        self.registers.f &= 0b0000_0000;
+        if self.registers.a == 0 {
+            self.registers.f |= 0b1000_0000;
+        }
+    }
+
+    pub fn and_a_c(&mut self) {
+        self.registers.a &= self.registers.c;
+        let mut new_f = 0b0010_0000;
+        if self.registers.a == 0 {
+            new_f |= 0b1000_0000;
+        }
+        self.registers.f = new_f;
+    }
+
+    pub fn ld_a_c(&mut self) {
+        self.registers.a = self.registers.c;
+    }
+
+    pub fn rst_28(&mut self) {
+        let return_address = self.pc;
+        let lo_byte = (return_address & 0x00FF) as u8;
+        let hi_byte = ((return_address & 0xFF00) >> 8) as u8;
+        self.sp = self.sp.wrapping_sub(1);
+        self.write_byte(self.sp, hi_byte);
+        self.sp = self.sp.wrapping_sub(1);
+        self.write_byte(self.sp, lo_byte);
+        self.pc = 0x0028;
+    }
+ 
+ pub fn add_a_a(&mut self) {
+        let original = self.registers.a;
+        let result = original.wrapping_add(original);
+        let mut new_f = 0b0000_0000;
+        if ((original as u16) + (original as u16)) > 0xFF {
+            new_f |= 0b0001_0000;
+        }
+        if ((original & 0x0F) + (original & 0x0F)) > 0x0F {
+            new_f |= 0b0010_0000;
+        }
+        if result == 0 {
+            new_f |= 0b1000_0000;
+        }
+        self.registers.f = new_f;
+        self.registers.a = result;
+ }
+
+ pub fn pop_hl(&mut self) {
+    let low = self.read_byte(self.sp);
+    self.sp = self.sp.wrapping_add(1);
+    let high = self.read_byte(self.sp);
+    self.sp = self.sp.wrapping_add(1);
+    self.registers.l = low;
+    self.registers.h = high;
+ }
+
+ pub fn ld_e_a(&mut self) {
+    self.registers.e = self.registers.a;
+ }
+
+ pub fn add_hl_de(&mut self) {
+    let hl = (self.registers.l as u16) | ((self.registers.h as u16) << 8);
+    let de = (self.registers.e as u16) | ((self.registers.d as u16) << 8);
+    let result = hl.wrapping_add(de);
+    self.registers.f &= 0b1000_0000;
+    if (hl as u32) + (de as u32) > 0xFFFF {
+        self.registers.f |= 0b0001_0000;
+    }
+    if (hl & 0x0FFF) + (de & 0x0FFF) > 0x0FFF {
+        self.registers.f |= 0b0010_0000;
+    }
+    self.registers.l = (result & 0x00FF) as u8;
+    self.registers.h = ((result & 0xFF00) >> 8) as u8;
+ }
+
+ pub fn ld_e_hlptr(&mut self) {
+    let hl = (self.registers.l as u16) | ((self.registers.h as u16) << 8);
+    let val = self.read_byte(hl);
+    self.registers.e = val;
+ }
+
+ pub fn ld_d_hlptr(&mut self) {
+    let hl = (self.registers.l as u16) | ((self.registers.h as u16) << 8);
+    let val = self.read_byte(hl);
+    self.registers.d = val;
+ }
+
+ pub fn push_de(&mut self) {
+    self.sp = self.sp.wrapping_sub(1);
+    self.write_byte(self.sp, self.registers.d);
+    self.sp = self.sp.wrapping_sub(1);
+    self.write_byte(self.sp, self.registers.e);
+ }
+
+ pub fn jp_hl(&mut self) {
+    let hl = (self.registers.l as u16) | ((self.registers.h as u16) << 8);
+    self.pc = hl; 
+ }
+
+ pub fn res_0_a(&mut self) {
+    self.registers.a &= 0b1111_1110;
+ }
+
+ pub fn ld_deptr_a(&mut self) {
+    let de = (self.registers.e as u16) | ((self.registers.d as u16) << 8);
+    self.write_byte(de, self.registers.a);
+ }
+
+ pub fn push_hl(&mut self) {
+    self.sp = self.sp.wrapping_sub(1);
+    self.write_byte(self.sp, self.registers.h);
+    self.sp = self.sp.wrapping_sub(1);
+    self.write_byte(self.sp, self.registers.l);
+ }
+
+ pub fn pop_de(&mut self) {
+    let low = self.read_byte(self.sp);
+    self.sp = self.sp.wrapping_add(1);
+    let high = self.read_byte(self.sp);
+    self.sp = self.sp.wrapping_add(1);
+    self.registers.d = high;
+    self.registers.e = low;
+ }
+
+ pub fn push_af(&mut self) {
+    let low = self.registers.f;
+    let high = self.registers.a;
+    self.sp = self.sp.wrapping_sub(1);
+    self.write_byte(self.sp, high);
+    self.sp = self.sp.wrapping_sub(1);
+    self.write_byte(self.sp, low);
+ }
+
+ pub fn ld_a_a16ptr(&mut self) {
+    let low = self.fetch_byte();
+    let high = self.fetch_byte();
+    let a16 = (low as u16) | ((high as u16) << 8);
+    self.registers.a = self.read_byte(a16);
+ }
+
+ pub fn and_a_a(&mut self) {
+    self.registers.a &= self.registers.a;
+    let mut new_f = 0b0010_0000;
+    if self.registers.a == 0 {
+        new_f |= 0b1000_0000;
+    }
+    self.registers.f = new_f;
+ }
+
+ pub fn inc_e(&mut self) {
+    let original = self.registers.e;
+    self.registers.e = self.registers.e.wrapping_add(1);
+    self.registers.f &= 0b0001_0000;
+    if (original & 0x0F) == 0x0F {
+        self.registers.f |= 0b0010_0000;
+    }
+    if self.registers.e == 0 {
+        self.registers.f |= 0b1000_0000;
+    }
+ }
+
+ pub fn jp_z_a16(&mut self) {
+    let low = self.fetch_byte();
+    let high = self.fetch_byte();
+    let a16 = (low as u16) | ((high as u16) << 8);
+    if (self.registers.f & 0b1000_0000) != 0 {
+        self.pc = a16;
+    }
+ }
 }
