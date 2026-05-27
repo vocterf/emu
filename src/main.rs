@@ -1,5 +1,4 @@
 use core::panic;
-use std::cell::Cell;
 
 mod instructions;
 
@@ -11,7 +10,10 @@ pub struct CPU {
     pub(crate) memory: [u8; 0x10000],
     pub(crate) boot_rom: [u8; 256],
     pub(crate) boot_rom_active: bool,
-    pub(crate) ly: Cell<u8>,
+    pub(crate) ly: u8,
+    pub(crate) ly_divider: u32,
+    pub(crate) div_counter: u32,
+    pub(crate) ime: bool,
 }
 
 impl CPU {
@@ -23,7 +25,10 @@ impl CPU {
             memory: [0; 0x10000],
             boot_rom: [0; 256],
             boot_rom_active: true,
-            ly: Cell::new(0),
+            ly: 0,
+            ly_divider: 0,
+            div_counter: 0,
+            ime: false,
         }
     }
 
@@ -52,13 +57,26 @@ impl CPU {
         }
 
         match address {
+            0xFF41 => {
+                // Dynamiczne obliczanie 4 trybów PPU na podstawie licznika cykli linii (ly_divider)
+                let base_stat = self.memory[0xFF41] & 0xFC;
+                if self.ly >= 144 {
+                    base_stat | 0x01 // Linia >= 144 to zawsze Tryb 1: V-Blank
+                } else {
+                    if self.ly_divider < 80 {
+                        base_stat | 0x02 // Pierwsze 80 cykli to Tryb 2: OAM Search
+                    } else if self.ly_divider < 252 {
+                        base_stat | 0x03 // Kolejne 172 cykle to Tryb 3: LCD Transfer
+                    } else {
+                        base_stat | 0x00 // Reszta cykli do 456 to Tryb 0: H-Blank
+                    }
+                }
+            }
             0xFF44 => {
                 if self.boot_rom_active {
                     0x90
                 } else {
-                    let current = self.ly.get();
-                    self.ly.set((current + 1) % 154);
-                    current
+                    self.ly
                 }
             }
             _ => self.memory[address as usize],
@@ -67,6 +85,27 @@ impl CPU {
 
     pub fn write_byte(&mut self, address: u16, value: u8) {
         match address {
+            0xFF04 => {
+                self.memory[0xFF04] = 0;
+            }
+            0xFF02 => {
+                if (value & 0x80) != 0 {
+                    self.memory[0xFF02] = value & 0x7F;
+                } else {
+                    self.memory[0xFF02] = value;
+                }
+            }
+            0xFF46 => {
+                // IMPLEMENTACJA TRANSFERU OAM DMA:
+                // Zapis pod 0xFF46 uruchamia sprzętowe kopiowanie całego bloku danych duszków
+                self.memory[0xFF46] = value;
+                let source_base = (value as u16) << 8;
+                for i in 0..160 {
+                    let src_addr = source_base + i;
+                    let byte_to_copy = self.read_byte(src_addr);
+                    self.memory[0xFE00 + i as usize] = byte_to_copy;
+                }
+            }
             0xFF50 => {
                 if value == 1 {
                     self.boot_rom_active = false;
@@ -79,11 +118,48 @@ impl CPU {
 
     pub fn fetch_byte(&mut self) -> u8 {
         let byte = self.read_byte(self.pc);
-        self.pc += 1;
+        self.pc = self.pc.wrapping_add(1);
         byte
     }
 
     pub fn tick(&mut self) {
+        self.div_counter += 1;
+        if self.div_counter >= 256 {
+            self.div_counter = 0;
+            self.memory[0xFF04] = self.memory[0xFF04].wrapping_add(1);
+        }
+
+        if !self.boot_rom_active {
+            self.ly_divider += 1;
+            if self.ly_divider >= 456 {
+                self.ly_divider = 0;
+                self.ly = (self.ly + 1) % 154;
+
+                if self.ly == 144 {
+                    self.memory[0xFF0F] |= 0x01;
+                }
+            }
+        }
+
+        if self.ime {
+            let ie = self.memory[0xFFFF];
+            let if_reg = self.memory[0xFF0F];
+            let pending = ie & if_reg;
+
+            if (pending & 0x01) != 0 {
+                self.ime = false;
+                self.memory[0xFF0F] &= !0x01;
+
+                let return_address = self.pc;
+                self.sp = self.sp.wrapping_sub(1);
+                self.write_byte(self.sp, ((return_address & 0xFF00) >> 8) as u8);
+                self.sp = self.sp.wrapping_sub(1);
+                self.write_byte(self.sp, (return_address & 0x00FF) as u8);
+
+                self.pc = 0x0040;
+            }
+        }
+
         let fetched_opcode = self.fetch_byte();
         let prefix_opcode = 0xCB;
 
@@ -150,6 +226,7 @@ impl CPU {
             0x36 => self.ld_hlptr_n8(),
             0x2A => self.ld_a_hlptrinc(),
             0x01 => self.ld_bc_n16(),
+            0x0A => self.ld_a_bcptr(),
             0x0B => self.dec_bc(),
             0xB1 => self.or_a_c(),
             0xFB => self.ei(),
@@ -176,8 +253,24 @@ impl CPU {
             0xFA => self.ld_a_a16ptr(),
             0xA7 => self.and_a_a(),
             0x1C => self.inc_e(),
-            0x4F => self.ld_c_a(),
             0xCA => self.jp_z_a16(),
+            0xC8 => self.ret_z(),
+            0x7E => self.ld_a_hlptr(),
+            0xF1 => self.pop_af(),
+            0xC0 => self.ret_nz(),
+            0xD8 => self.ret_c(),
+            0x0F => self.rrca(),
+            0xB6 => self.or_a_hlptr(),
+            0x40 => self.ld_b_b(),
+            0x14 => self.inc_d(),
+            0x02 => self.ld_bcptr_a(),
+            0xE8 => self.add_sp_e8(),
+            0x2C => self.inc_l(),
+            0x82 => self.add_a_d(),
+            0x84 => self.add_a_h(),
+            0x34 => self.inc_hlptr(),
+            0x3C => self.inc_a(),
+            0xD9 => self.reti(),
             _ => panic!(
                 "STOP! Nieznany opcode: {:#04X} pod adresem: {:#06X}. Pora go zaimplementować!",
                 opcode,
@@ -193,6 +286,7 @@ impl CPU {
             0x11 => self.rl_c(),
             0x37 => self.swap_a(),
             0x87 => self.res_0_a(),
+            0x41 => self.bit0_c(),
             _ => panic!(
                 "STOP! Nieznany CB opcode: {:#04X} pod adresem: {:#06X}.",
                 opcode,
